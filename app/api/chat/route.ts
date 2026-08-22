@@ -83,8 +83,8 @@ ${contextText}
       generation.end({
         output: text,
         usage: {
-          input: usage.promptTokens,
-          output: usage.completionTokens,
+          input: usage.inputTokens,
+          output: usage.outputTokens,
         },
       });
       trace.update({ output: text });
