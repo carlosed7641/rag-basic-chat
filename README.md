@@ -1,36 +1,87 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RAG Chat
 
-## Getting Started
+Chatbot de documentación con recuperación semántica. Permite indexar documentos y hacer preguntas en lenguaje natural sobre su contenido.
 
-First, run the development server:
+## Demo
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+[Ver demo en producción](https://rag-basic-chat.vercel.app)
+
+## ¿Cómo funciona?
+
+1. El usuario pega un documento y lo indexa
+2. El texto se divide en chunks y se convierte en vectores con Xenova/all-MiniLM-L6-v2
+3. Los vectores se almacenan en Supabase con pgvector
+4. Cuando el usuario hace una pregunta, se buscan los chunks más relevantes por similitud semántica
+5. Claude recibe solo los chunks relevantes como contexto y genera la respuesta en streaming
+6. Langfuse registra cada interacción con métricas de latencia, tokens y costo
+
+## Stack
+
+- **Framework**: Next.js 16 (App Router)
+- **LLM**: Claude Sonnet via Vercel AI SDK
+- **Embeddings**: Xenova/Transformers.js (local, sin API externa)
+- **Base de datos vectorial**: Supabase + pgvector
+- **Observabilidad**: Langfuse
+- **Deploy**: Vercel
+
+## Variables de entorno
+
+```env
+ANTHROPIC_API_KEY=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_BASEURL=
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup local
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Base de datos
 
-## Learn More
+Ejecuta estas queries en el SQL Editor de Supabase:
 
-To learn more about Next.js, take a look at the following resources:
+```sql
+create extension if not exists vector;
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+create table documents (
+  id bigserial primary key,
+  content text not null,
+  embedding vector(384),
+  metadata jsonb,
+  created_at timestamp with time zone default now()
+);
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+create index on documents
+using ivfflat (embedding vector_cosine_ops)
+with (lists = 100);
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+create or replace function match_documents (
+  query_embedding vector(384),
+  match_threshold float,
+  match_count int
+)
+returns table (
+  id bigint,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+language sql stable
+as $$
+  select
+    documents.id,
+    documents.content,
+    documents.metadata,
+    1 - (documents.embedding <=> query_embedding) as similarity
+  from documents
+  where 1 - (documents.embedding <=> query_embedding) > match_threshold
+  order by similarity desc
+  limit match_count;
+$$;
+```
